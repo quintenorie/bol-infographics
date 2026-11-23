@@ -112,6 +112,11 @@ def voorwie(kop, items):
 def gemak(kop, items, photo=None):
     row = lambda i, sz, fs: (f'<div class="card" style="display:flex;gap:{round(sz*0.3)}px;align-items:center;border-radius:34px;padding:{round(sz*0.28)}px {round(sz*0.32)}px">'
                              f'{tile_icon(i[0], sz)}<div><b class="t" style="font-size:{fs}px">{e(i[1])}</b><span class="s" style="font-size:{round(fs*0.7)}px">{e(i[2])}</span></div></div>')
+    if photo and len(items) == 1:
+        return page(head('Gemak', kop) +
+            f'<div style="position:absolute;left:300px;top:250px;width:600px;height:600px;border-radius:50%;background:{P["soft"]}"></div>'
+            f'<img src="{photo}" style="position:absolute;left:150px;right:150px;top:230px;width:900px;height:640px;object-fit:contain;mix-blend-mode:multiply">'
+            f'<div style="position:absolute;left:48px;right:48px;bottom:48px">' + row(items[0], 84, 42) + '</div>')
     if photo:
         return page(head('Gemak', kop) +
             f'<div style="position:absolute;left:40px;top:330px;width:470px;height:470px;border-radius:50%;background:{P["soft"]}"></div>'
@@ -151,3 +156,16 @@ def maathulp(size, table, svg, melding, label='voetlengte', text='Zet je hiel te
             f'<div class="alle"><h2>Andere {e(label)}? Zo vind je jouw maat:</h2><div class="grid">{cells}</div></div>'
             + (f'<div class="pas"><b>{pas[0]}</b><span>{pas[1]}</span></div>' if pas else '') + '</div>')
     return f'<!doctype html><html><head><meta charset="utf-8"><style>{css()}{extra}</style></head><body>{body}</body></html>'
+
+# ---------- 7. Details: 1 of 2 overige productfoto's met onderschrift ----------
+def details(kop, items):
+    def card(photo, cap, h):
+        c = (f'<div style="position:absolute;left:24px;bottom:24px;background:#fff;border-radius:99px;padding:12px 26px;'
+             f'font:700 30px Inter;box-shadow:0 10px 24px -14px rgba(16,40,45,.5)">{e(cap)}</div>') if cap else ''
+        return (f'<div style="position:relative;flex:1;height:{h}px;border-radius:36px;background:{P["soft2"]};border:2px solid {P["line"]};overflow:hidden">'
+                f'<img src="{photo}" style="position:absolute;inset:30px 30px 90px;width:calc(100% - 60px);height:calc(100% - 120px);object-fit:contain;mix-blend-mode:multiply">{c}</div>')
+    if len(items) == 1:
+        body = card(items[0][0], items[0][1], 880)
+        return page(head('Details', kop) + f'<div style="position:absolute;left:48px;right:48px;top:260px;bottom:48px;display:flex">{body}</div>')
+    body = ''.join(card(p, c, 880) for p, c in items)
+    return page(head('Details', kop) + f'<div style="position:absolute;left:48px;right:48px;top:260px;bottom:48px;display:flex;gap:24px">{body}</div>')
