@@ -246,7 +246,7 @@ def slug(s):
     return re.sub(r'[^a-z0-9]+', '-', s.lower()).strip('-')[:60]
 
 def model_hash(m, sizes):
-    key = json.dumps([TEMPLATE_VERSION, m['text'], m['size_chart'], m['photos'], m.get('labels'), sorted(sizes),
+    key = json.dumps([TEMPLATE_VERSION, m['text'], m['size_chart'], m['photos'], m.get('labels'), sorted(sizes), sorted(c['size'] or '' for c in m['children']),
                       open(os.path.join(ROOT, 'templates.py')).read()], ensure_ascii=False)
     return hashlib.sha256(key.encode()).hexdigest()[:10]
 
@@ -343,7 +343,9 @@ def build_model(r, m, d, h, sizes, rep):
             if s in vals: return s
             return next((v for v in vals if re.search(rf'(^|[^0-9A-Za-z]){re.escape(v)}($|[^0-9A-Za-z])', s)), None)
         mapped = {s: match(s) for s in sizes}
-        table = [x for x in ch['table'] if x['value'] in mapped.values()] or ch['table']
+        # tabel: alle maten van het model, ook maten die (tijdelijk) niet actief zijn
+        every = {match(c['size']) for c in m['children'] if c.get('size')}
+        table = [x for x in ch['table'] if x['value'] in every] or ch['table']
         svg = recolor(ch['svg'], ch['template'], ch['measure'])
         for s, v in mapped.items():
             if not v:
