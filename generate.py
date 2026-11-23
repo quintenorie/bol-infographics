@@ -248,6 +248,7 @@ def model_hash(m, sizes):
 
 # trefwoorden in de alt-tekst (label) van een productfoto
 KEYWORDS = {
+    'geopend': ['geopend'],
     'detail': ['detail'],
     'bovenkant': ['bovenkant', 'bovenaanzicht', 'van boven'],
     'zijkant': ['zijkant', 'zijaanzicht'],
@@ -266,8 +267,9 @@ def build_model(r, m, d, h, sizes, rep):
     base = slug(m['name']); files = {}; maat = {}
     photos = []
     labels = m.get('labels') or []
-    # stappen: gekozen foto > 'detail' > 'bovenkant' > uitsnede van de hoofdfoto
-    n_st = d['fotos'].get('stappen') or find_photo(labels, 'detail') or find_photo(labels, 'bovenkant')
+    # stappen: gekozen foto > 'geopend' > 'detail' > 'bovenkant' > uitsnede van de hoofdfoto
+    n_st = (d['fotos'].get('stappen') or find_photo(labels, 'geopend') or find_photo(labels, 'detail')
+            or find_photo(labels, 'bovenkant'))
     # gemak: gekozen foto ('geen' = 0) > 'aan de voet' > 'zijkant' > 'onderkant' > alleen iconen
     n_ge = d['fotos'].get('gemak', None)
     if n_ge is None:
