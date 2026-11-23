@@ -20,12 +20,12 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 import templates as T
 
-TEMPLATE_VERSION = '3'          # ophogen = alles opnieuw maken
+TEMPLATE_VERSION = '5'          # ophogen = alles opnieuw maken
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(ROOT, os.environ.get('OUT_DIR', 'site'))
 WORK = os.path.join(ROOT, '.work')
 IMG = os.path.join(OUT, 'img')
-ATTRS = ['bol_img_kenmerken', 'bol_img_maathulp', 'bol_img_verstelbaar', 'bol_img_voorwie', 'bol_img_gemak']
+ATTRS = ['bol_img_kenmerken', 'bol_img_maathulp', 'bol_img_verstelbaar', 'bol_img_voorwie', 'bol_img_gemak', 'bol_img_details']
 TODAY = datetime.date.today().isoformat()
 
 # ------------------------------------------------------------------ tekst
@@ -266,19 +266,37 @@ def find_photo(labels, kind):
             return i + 1
     return None
 
+def caption(labels, k):
+    """Onderschrift uit de alt-tekst: het deel na het streepje."""
+    l = (labels[k - 1] if k - 1 < len(labels) else '') or ''
+    for sep in (' – ', ' - '):
+        if sep in l:
+            c = l.split(sep, 1)[1].strip()
+            return c[:1].upper() + c[1:]
+    return ''
+
 def build_model(r, m, d, h, sizes, rep):
     """Maakt alle afbeeldingen van één model. Geeft {soort: bestand} en {maat: bestand}."""
     base = slug(m['name']); files = {}; maat = {}
     photos = []
     labels = m.get('labels') or []
+    N = len(m['photos'])
+    has_st = len(d['stap']) >= 2
+    has_ge = 1 <= len(d['gemak']) <= 3
     # stappen: gekozen foto > 'geopend' > 'detail' > 'bovenkant' > uitsnede van de hoofdfoto
     n_st = (d['fotos'].get('stappen') or find_photo(labels, 'geopend') or find_photo(labels, 'detail')
-            or find_photo(labels, 'bovenkant'))
-    # gemak: gekozen foto ('geen' = 0) > 'aan de voet' > 'zijkant' > 'onderkant' > alleen iconen
+            or find_photo(labels, 'bovenkant')) if has_st else None
+    # gemak: gekozen foto ('geen' = 0) > 'aan de voet' > 'zijkant' > 'onderkant' > vrije foto > alleen iconen
     n_ge = d['fotos'].get('gemak', None)
-    if n_ge is None:
-        n_ge = find_photo(labels, 'voet') or find_photo(labels, 'zijkant') or find_photo(labels, 'onderkant') or 0
-    want = {1, n_st, n_ge} - {None, 0}
+    if n_ge is None and has_ge:
+        n_ge = find_photo(labels, 'voet') or find_photo(labels, 'zijkant') or find_photo(labels, 'onderkant')
+        if n_ge is None or n_ge == n_st:
+            n_ge = next((k for k in range(2, N + 1) if k != n_st), 0)
+    if not has_ge:
+        n_ge = 0
+    # details: alle overige productfoto's (max. 2), zodat geen foto ongebruikt blijft
+    n_det = [k for k in range(2, N + 1) if k not in (n_st, n_ge)][:2] if d['fotos'].get('details', 1) else []
+    want = {1, n_st, n_ge, *n_det} - {None, 0}
     for i, src in enumerate(m['photos']):
         if i + 1 not in want:
             photos.append(None); continue
@@ -310,8 +328,11 @@ def build_model(r, m, d, h, sizes, rep):
     if len(d['voorwie']) >= 2:
         out('voorwie', T.voorwie(d['koppen'].get('voorwie', 'Voor wie is dit?'), d['voorwie'][:4]))
     if d['gemak']:
-        ph = save(trim(foto(n_ge)), 'p3.jpg') if n_ge and foto(n_ge) and 2 <= len(d['gemak']) <= 3 else None
+        ph = save(trim(foto(n_ge)), 'p3.jpg') if n_ge and foto(n_ge) else None
         out('gemak', T.gemak(d['koppen'].get('gemak', 'Handig in gebruik'), d['gemak'][:3], ph))
+    det = [(save(trim(foto(k)), f'p_det{k}.jpg'), caption(labels, k)) for k in n_det if foto(k)]
+    if det:
+        out('details', T.details(d['koppen'].get('details', 'Van dichtbij'), det))
 
     ch = r.chart(m['size_chart'])
     if not ch:
