@@ -20,7 +20,7 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 import templates as T
 
-TEMPLATE_VERSION = '2'          # ophogen = alles opnieuw maken
+TEMPLATE_VERSION = '3'          # ophogen = alles opnieuw maken
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(ROOT, os.environ.get('OUT_DIR', 'site'))
 WORK = os.path.join(ROOT, '.work')
@@ -103,9 +103,7 @@ class Magento:
             items = [i for i in items if i['sku'] in only]
         for it in items:
             ca = {c['attribute_code']: c['value'] for c in it.get('custom_attributes', [])}
-            photos = [f"{self.base}/media/catalog/product{m['file']}"
-                      for m in sorted(it.get('media_gallery_entries') or [], key=lambda m: m.get('position', 0))
-                      if m.get('media_type') == 'image' and not m.get('disabled')]
+            photos, labels = self.gallery(it)
             # maat-attribuut van het configurable product
             codes = []
             try:
@@ -124,16 +122,28 @@ class Magento:
                 ch = full.get(ch['sku'], ch)
                 cca = {c['attribute_code']: c['value'] for c in ch.get('custom_attributes', [])}
                 size = None
-                for code, labels in codes:
+                for code, optlabels in codes:
                     if code in cca:
-                        size = labels.get(str(cca[code]), size)
+                        size = optlabels.get(str(cca[code]), size)
                 if not size:                                  # reserve: maat achter het laatste streepje in de naam
                     m = re.search(r'-\s*([^-]+)\s*$', ch.get('name', ''))
                     size = m.group(1).strip() if m else None
                 children.append(dict(sku=ch['sku'], ean=str(cca.get('eancode') or '').strip(), size=size,
                                      enabled=ch.get('status', 1) == 1))
             yield dict(sku=it['sku'], name=it['name'], text=ca.get('bol_infographic', ''),
-                       size_chart=ca.get('size_chart', ''), photos=photos, children=children)
+                       size_chart=ca.get('size_chart', ''), photos=photos, labels=labels, children=children)
+
+    def gallery(self, it):
+        ents = [m for m in sorted(it.get('media_gallery_entries') or [], key=lambda m: m.get('position') or 0)
+                if m.get('media_type') == 'image' and not m.get('disabled')]
+        return ([f"{self.base}/media/catalog/product{m['file']}" for m in ents], [m.get('label') or '' for m in ents])
+
+    def all_photos(self):
+        """Alle configurables binnen MISSING_LIKE, voor de fotobladen."""
+        items = self.search([('type_id', 'configurable', 'eq'), ('name', os.environ.get('MISSING_LIKE', 'Varomed%'), 'like')])
+        for it in sorted(items, key=lambda i: i['sku']):
+            urls, labels = self.gallery(it)
+            yield dict(sku=it['sku'], name=it['name'], photos=urls, labels=labels)
 
     def missing(self):
         like = os.environ.get('MISSING_LIKE', 'Varomed%')
@@ -151,6 +161,8 @@ class Fixture:
         yield from self.d['models']
     def missing(self):
         return self.d.get('missing', [])
+    def all_photos(self):
+        yield from self.d['models']
 
 # ------------------------------------------------------------------ foto's
 def load_photo(src):
@@ -230,15 +242,37 @@ def slug(s):
     return re.sub(r'[^a-z0-9]+', '-', s.lower()).strip('-')[:60]
 
 def model_hash(m, sizes):
-    key = json.dumps([TEMPLATE_VERSION, m['text'], m['size_chart'], m['photos'], sorted(sizes),
+    key = json.dumps([TEMPLATE_VERSION, m['text'], m['size_chart'], m['photos'], m.get('labels'), sorted(sizes),
                       open(os.path.join(ROOT, 'templates.py')).read()], ensure_ascii=False)
     return hashlib.sha256(key.encode()).hexdigest()[:10]
+
+# trefwoorden in de alt-tekst (label) van een productfoto
+KEYWORDS = {
+    'detail': ['detail'],
+    'bovenkant': ['bovenkant', 'bovenaanzicht', 'van boven'],
+    'zijkant': ['zijkant', 'zijaanzicht'],
+    'onderkant': ['onderkant', 'onderaanzicht'],
+    'voet': ['aan de voet', 'gedragen', 'in gebruik'],
+}
+
+def find_photo(labels, kind):
+    for i, l in enumerate(labels or []):
+        if any(w in (l or '').lower() for w in KEYWORDS[kind]):
+            return i + 1
+    return None
 
 def build_model(r, m, d, h, sizes, rep):
     """Maakt alle afbeeldingen van één model. Geeft {soort: bestand} en {maat: bestand}."""
     base = slug(m['name']); files = {}; maat = {}
     photos = []
-    want = sorted({1, 3} | {n for n in d['fotos'].values() if n})
+    labels = m.get('labels') or []
+    # stappen: gekozen foto > 'detail' > 'bovenkant' > uitsnede van de hoofdfoto
+    n_st = d['fotos'].get('stappen') or find_photo(labels, 'detail') or find_photo(labels, 'bovenkant')
+    # gemak: gekozen foto ('geen' = 0) > 'aan de voet' > 'zijkant' > 'onderkant' > alleen iconen
+    n_ge = d['fotos'].get('gemak', None)
+    if n_ge is None:
+        n_ge = find_photo(labels, 'voet') or find_photo(labels, 'zijkant') or find_photo(labels, 'onderkant') or 0
+    want = {1, n_st, n_ge} - {None, 0}
     for i, src in enumerate(m['photos']):
         if i + 1 not in want:
             photos.append(None); continue
@@ -263,16 +297,14 @@ def build_model(r, m, d, h, sizes, rep):
         out('kenmerken', T.kenmerken(d['kop'], d['kenmerk'][:6], p1))
     elif d['kenmerk']:
         rep['waarschuwingen'].append('Minder dan 2 kenmerken: geen kenmerken-afbeelding')
-    n = d['fotos'].get('stappen')
-    src2 = foto(n) if n else None                      # gekozen foto, anders uitsnede van de hoofdfoto
+    src2 = foto(n_st) if n_st else None
     if len(d['stap']) >= 2 and (src2 or foto(1)):
         ph = save(trim(src2) if src2 else detail_crop(foto(1)), 'p2.jpg')
         out('verstelbaar', T.stappen(d['koppen'].get('stappen', 'Zo stel je hem in'), d['stap'], ph))
     if len(d['voorwie']) >= 2:
         out('voorwie', T.voorwie(d['koppen'].get('voorwie', 'Voor wie is dit?'), d['voorwie'][:4]))
     if d['gemak']:
-        n = d['fotos'].get('gemak', 3)                 # standaard foto 3; 'foto gemak: geen' = alleen iconen
-        ph = save(trim(foto(n)), 'p3.jpg') if foto(n) and 2 <= len(d['gemak']) <= 3 else None
+        ph = save(trim(foto(n_ge)), 'p3.jpg') if n_ge and foto(n_ge) and 2 <= len(d['gemak']) <= 3 else None
         out('gemak', T.gemak(d['koppen'].get('gemak', 'Handig in gebruik'), d['gemak'][:3], ph))
 
     ch = r.chart(m['size_chart'])
@@ -311,7 +343,7 @@ def main():
             kids = [c for c in m['children'] if c['enabled']]
             sizes = list(dict.fromkeys(c['size'] for c in kids if c['size']))
             h = model_hash(m, sizes)
-            rep = dict(sku=m['sku'], name=m['name'], fouten=list(d['fouten']), waarschuwingen=[], status='ongewijzigd', photos=m['photos'])
+            rep = dict(sku=m['sku'], name=m['name'], fouten=list(d['fouten']), waarschuwingen=[], status='ongewijzigd', photos=m['photos'], labels=m.get('labels') or [])
             old = manifest['models'].get(m['sku'])
             have = old and old['hash'] == h and all(os.path.exists(os.path.join(IMG, f))
                                                      for f in list(old['files'].values()) + list(old['maat'].values()))
@@ -355,7 +387,48 @@ def main():
 
     write_feed(feed)
     write_report(report, src.missing(), len(feed))
+    if os.environ.get('FOTOBLADEN') in ('1', 'true'):
+        make_sheets(src)
     shutil.rmtree(WORK, ignore_errors=True)
+
+def make_sheets(src):
+    """Fotobladen: alle productfoto's in raster, om te labelen."""
+    from PIL import ImageDraw, ImageFont
+    d = os.path.join(OUT, 'fotobladen'); shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
+    fb = lambda sz: ImageFont.truetype(os.path.join(ROOT, 'fonts/Inter-Bold.otf'), sz)
+    fm = lambda sz: ImageFont.truetype(os.path.join(ROOT, 'fonts/Inter-Medium.otf'), sz)
+    tiles = []
+    for m in src.all_photos():
+        for k, url in enumerate(m['photos']):
+            tiles.append((m['sku'], k + 1, m['name'], url, (m.get('labels') or [''] * 99)[k]))
+    C, R, W, TH = 5, 4, 380, 76
+    rows = []
+    for b in range(0, len(tiles), C * R):
+        sheet = Image.new('RGB', (C * W, R * (W + TH)), 'white'); dr = ImageDraw.Draw(sheet)
+        for j, (sku, nr, name, url, label) in enumerate(tiles[b:b + C * R]):
+            x, y = (j % C) * W, (j // C) * (W + TH)
+            try:
+                im = trim(load_photo(url)); im.thumbnail((W - 24, W - 24))
+                sheet.paste(im, (x + (W - im.width) // 2, y + TH + (W - im.height) // 2))
+            except Exception:
+                dr.text((x + 20, y + TH + 150), 'foto niet te laden', fill='#b42318', font=fm(20))
+            dr.rectangle((x + 6, y + 6, x + W - 6, y + TH - 4), fill='#10282d')
+            dr.text((x + 16, y + 12), f'{sku}  ·  foto {nr}', fill='white', font=fb(22))
+            short = name.replace('Varomed ', '').replace('Verbandschoenen ', '').replace('Verbandschoen ', '')
+            dr.text((x + 16, y + 42), short[:34], fill='#cde3e6', font=fm(19))
+            dr.rectangle((x, y, x + W - 1, y + W + TH - 1), outline='#d5e6e8', width=2)
+            rows.append((b // (C * R) + 1, sku, nr, name, url.split('/media/catalog/product')[-1], label))
+        sheet.save(os.path.join(d, f'blad-{b // (C * R) + 1:02d}.jpg'), quality=85)
+    n = -(-len(tiles) // (C * R))
+    html = ('<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>Fotobladen</title>'
+            '<body style="font:15px system-ui;margin:32px"><h1>Fotobladen</h1>'
+            f'<p>{len(tiles)} foto\'s op {n} bladen.</p>'
+            + ''.join(f'<p><a href="blad-{i:02d}.jpg">blad-{i:02d}.jpg</a></p>' for i in range(1, n + 1))
+            + '<table border=1 cellpadding=4 style="border-collapse:collapse"><tr><th>blad</th><th>sku</th><th>foto</th><th>bestand</th><th>huidige alt-tekst</th></tr>'
+            + ''.join(f'<tr><td>{a}</td><td>{H.escape(b)}</td><td>{c}</td><td>{H.escape(e_)}</td><td>{H.escape(f)}</td></tr>' for a, b, c, _, e_, f in rows)
+            + '</table>')
+    open(os.path.join(d, 'index.html'), 'w').write(html)
+    print(f'{len(tiles)} foto\'s op {n} fotobladen')
 
 def write_feed(rows):
     out = ['<?xml version="1.0" encoding="UTF-8"?>', '<products>']
@@ -366,14 +439,15 @@ def write_feed(rows):
 
 def write_report(rep, missing, n_ean):
     e = H.escape
+    lab = lambda r, k: r['labels'][k] if k < len(r.get('labels') or []) else ''
     cnt = lambda s: sum(1 for r in rep if r['status'] == s)
     rows = ''.join(
         f'<tr><td><b>{e(r["name"])}</b><br><small>{e(r["sku"])} · {r["aantal"]} afbeeldingen · {e(r["status"])}</small>'
         + ''.join(f'<div class="err">{e(x)}</div>' for x in r['fouten'])
         + ''.join(f'<div class="warn">{e(x)}</div>' for x in r['waarschuwingen'])
         + '</td><td>' + ''.join(f'<a href="img/{f}"><img src="img/{f}" loading="lazy"></a>' for f in r.get('files', []))
-        + '<div class="ph"><small>Productfoto\'s (nummer voor <code>foto stappen:</code> / <code>foto gemak:</code>)</small><br>'
-        + ''.join(f'<a href="{e(p)}"><span>{k+1}</span><img src="{e(p)}" loading="lazy"></a>' for k, p in enumerate(r.get('photos', [])))
+        + '<div class="ph"><small>Productfoto\'s (alt-tekst bij muis erboven; nummer voor <code>foto stappen:</code> / <code>foto gemak:</code>)</small><br>'
+        + ''.join(f'<a href="{e(p)}" title="{e(lab(r, k))}"><span>{k+1}</span><img src="{e(p)}" loading="lazy"></a>' for k, p in enumerate(r.get('photos', [])))
         + '</div></td></tr>'
         for r in sorted(rep, key=lambda r: (not (r['fouten'] or r['waarschuwingen']), r['name'])))
     miss = ''.join(f'<li>{e(n)} <small>({e(s)})</small></li>' for s, n in missing)
