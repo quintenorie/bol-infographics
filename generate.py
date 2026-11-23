@@ -98,7 +98,10 @@ class Magento:
 
     def models(self):
         only = [s.strip() for s in os.environ.get('ONLY_SKUS', '').split(',') if s.strip()]
-        items = self.search([('type_id', 'configurable', 'eq'), ('bol_infographic', '', 'notnull')])
+        f = [('type_id', 'configurable', 'eq'), ('bol_infographic', '', 'notnull')]
+        if os.environ.get('INCLUDE_DISABLED') not in ('1', 'true'):
+            f.append(('status', '1', 'eq'))      # inactieve producten overslaan
+        items = self.search(f)
         if only:
             items = [i for i in items if i['sku'] in only]
         for it in items:
@@ -140,7 +143,8 @@ class Magento:
 
     def all_photos(self):
         """Alle configurables binnen MISSING_LIKE, voor de fotobladen."""
-        items = self.search([('type_id', 'configurable', 'eq'), ('name', os.environ.get('MISSING_LIKE', 'Varomed%'), 'like')])
+        items = self.search([('type_id', 'configurable', 'eq'), ('name', os.environ.get('MISSING_LIKE', 'Varomed%'), 'like'),
+                             ('status', '1', 'eq')])
         for it in sorted(items, key=lambda i: i['sku']):
             urls, labels = self.gallery(it)
             yield dict(sku=it['sku'], name=it['name'], photos=urls, labels=labels)
