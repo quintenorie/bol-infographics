@@ -12,7 +12,7 @@ CODES = {
     'verband': ('bandaids', None), 'steunzool': ('sneaker', 'plus'), 'stevig': ('person-simple-walk', 'shield-check'),
     'wasbaar30': ('washing-machine', '30°'), 'vocht': ('drop', None), 'warm': ('thermometer-cold', None),
     'licht': ('feather', None), 'zacht': ('hand-heart', None), 'zon': ('sun', None),
-    'breed': ('arrows-out-line-horizontal', None), 'open': ('door-open', None), 'standaard': ('check-circle', None),
+    'breed': ('arrows-out-line-horizontal', None), 'open': ('boot', 'arrows-out-simple'), 'standaard': ('check-circle', None),
 }
 
 def icon_exists(code):
