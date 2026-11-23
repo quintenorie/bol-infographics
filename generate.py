@@ -20,7 +20,7 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 import templates as T
 
-TEMPLATE_VERSION = '1'          # ophogen = alles opnieuw maken
+TEMPLATE_VERSION = '2'          # ophogen = alles opnieuw maken
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(ROOT, os.environ.get('OUT_DIR', 'site'))
 WORK = os.path.join(ROOT, '.work')
@@ -30,7 +30,7 @@ TODAY = datetime.date.today().isoformat()
 
 # ------------------------------------------------------------------ tekst
 def parse(text):
-    d = dict(kop='', kenmerk=[], stap=[], voorwie=[], gemak=[], koppen={}, fouten=[])
+    d = dict(kop='', kenmerk=[], stap=[], voorwie=[], gemak=[], koppen={}, fotos={}, fouten=[])
     for raw in (text or '').replace('\r', '').split('\n'):
         line = raw.strip()
         if not line or ':' not in line:
@@ -39,6 +39,12 @@ def parse(text):
         key = key.lower()
         if key == 'kop':
             d['kop'] = val
+        elif key.startswith('foto '):
+            v = val.lower()
+            if v in ('geen', 'nee') or v.isdigit():
+                d['fotos'][key[5:].strip()] = 0 if not v.isdigit() else int(v)
+            else:
+                d['fouten'].append(f'"{line}": gebruik een fotonummer of "geen"')
         elif key.startswith('kop '):
             d['koppen'][key[4:].strip()] = val
         elif key == 'stap':
@@ -112,7 +118,10 @@ class Magento:
             except Exception:
                 pass
             children = []
-            for ch in self.get(f'configurable-products/{it["sku"]}/children'):
+            kids = self.get(f'configurable-products/{it["sku"]}/children')
+            full = {p['sku']: p for p in self.search([('sku', ','.join(k['sku'] for k in kids), 'in')])} if kids else {}
+            for ch in kids:
+                ch = full.get(ch['sku'], ch)
                 cca = {c['attribute_code']: c['value'] for c in ch.get('custom_attributes', [])}
                 size = None
                 for code, labels in codes:
@@ -132,7 +141,8 @@ class Magento:
             return []
         items = self.search([('type_id', 'configurable', 'eq'), ('bol_infographic', '', 'null'),
                              ('name', like, 'like'), ('status', '1', 'eq')])
-        return [(i['sku'], i['name']) for i in items]
+        skip = [x.strip().lower() for x in os.environ.get('MISSING_EXCLUDE', 'Hielband').split(',') if x.strip()]
+        return [(i['sku'], i['name']) for i in items if not any(x in i['name'].lower() for x in skip)]
 
 class Fixture:
     def __init__(self, path):
@@ -228,14 +238,23 @@ def build_model(r, m, d, h, sizes, rep):
     """Maakt alle afbeeldingen van één model. Geeft {soort: bestand} en {maat: bestand}."""
     base = slug(m['name']); files = {}; maat = {}
     photos = []
-    for i, src in enumerate(m['photos'][:3]):
+    want = sorted({1, 3} | {n for n in d['fotos'].values() if n})
+    for i, src in enumerate(m['photos']):
+        if i + 1 not in want:
+            photos.append(None); continue
         try:
             photos.append(load_photo(src))
         except Exception as ex:
             rep['waarschuwingen'].append(f'Foto {i+1} niet te laden ({ex.__class__.__name__})')
-    if not photos:
+            photos.append(None)
+    def foto(n):
+        return photos[n - 1] if 0 < n <= len(photos) else None
+    for k, n in d['fotos'].items():
+        if n and not foto(n):
+            rep['waarschuwingen'].append(f'foto {k}: foto {n} bestaat niet')
+    if not foto(1):
         rep['fouten'].append('Geen productfoto gevonden')
-    p1 = save(trim(photos[0]), 'p1.jpg') if photos else ''
+    p1 = save(trim(foto(1)), 'p1.jpg') if foto(1) else ''
 
     def out(kind, html):
         fn = f'{base}-{kind}-{h}.jpg'; r.jpg(html, os.path.join(IMG, fn)); files[kind] = fn
@@ -244,13 +263,16 @@ def build_model(r, m, d, h, sizes, rep):
         out('kenmerken', T.kenmerken(d['kop'], d['kenmerk'][:6], p1))
     elif d['kenmerk']:
         rep['waarschuwingen'].append('Minder dan 2 kenmerken: geen kenmerken-afbeelding')
-    if len(d['stap']) >= 2 and photos:
-        ph = save(detail_crop(photos[1] if len(photos) > 1 else photos[0]), 'p2.jpg')
+    n = d['fotos'].get('stappen')
+    src2 = foto(n) if n else None                      # gekozen foto, anders uitsnede van de hoofdfoto
+    if len(d['stap']) >= 2 and (src2 or foto(1)):
+        ph = save(trim(src2) if src2 else detail_crop(foto(1)), 'p2.jpg')
         out('verstelbaar', T.stappen(d['koppen'].get('stappen', 'Zo stel je hem in'), d['stap'], ph))
     if len(d['voorwie']) >= 2:
         out('voorwie', T.voorwie(d['koppen'].get('voorwie', 'Voor wie is dit?'), d['voorwie'][:4]))
     if d['gemak']:
-        ph = save(trim(photos[2]), 'p3.jpg') if len(photos) > 2 and 2 <= len(d['gemak']) <= 3 else None
+        n = d['fotos'].get('gemak', 3)                 # standaard foto 3; 'foto gemak: geen' = alleen iconen
+        ph = save(trim(foto(n)), 'p3.jpg') if foto(n) and 2 <= len(d['gemak']) <= 3 else None
         out('gemak', T.gemak(d['koppen'].get('gemak', 'Handig in gebruik'), d['gemak'][:3], ph))
 
     ch = r.chart(m['size_chart'])
@@ -289,7 +311,7 @@ def main():
             kids = [c for c in m['children'] if c['enabled']]
             sizes = list(dict.fromkeys(c['size'] for c in kids if c['size']))
             h = model_hash(m, sizes)
-            rep = dict(sku=m['sku'], name=m['name'], fouten=list(d['fouten']), waarschuwingen=[], status='ongewijzigd')
+            rep = dict(sku=m['sku'], name=m['name'], fouten=list(d['fouten']), waarschuwingen=[], status='ongewijzigd', photos=m['photos'])
             old = manifest['models'].get(m['sku'])
             have = old and old['hash'] == h and all(os.path.exists(os.path.join(IMG, f))
                                                      for f in list(old['files'].values()) + list(old['maat'].values()))
@@ -349,14 +371,17 @@ def write_report(rep, missing, n_ean):
         f'<tr><td><b>{e(r["name"])}</b><br><small>{e(r["sku"])} · {r["aantal"]} afbeeldingen · {e(r["status"])}</small>'
         + ''.join(f'<div class="err">{e(x)}</div>' for x in r['fouten'])
         + ''.join(f'<div class="warn">{e(x)}</div>' for x in r['waarschuwingen'])
-        + '</td><td>' + ''.join(f'<a href="img/{f}"><img src="img/{f}" loading="lazy"></a>' for f in r.get('files', [])) + '</td></tr>'
+        + '</td><td>' + ''.join(f'<a href="img/{f}"><img src="img/{f}" loading="lazy"></a>' for f in r.get('files', []))
+        + '<div class="ph"><small>Productfoto\'s (nummer voor <code>foto stappen:</code> / <code>foto gemak:</code>)</small><br>'
+        + ''.join(f'<a href="{e(p)}"><span>{k+1}</span><img src="{e(p)}" loading="lazy"></a>' for k, p in enumerate(r.get('photos', [])))
+        + '</div></td></tr>'
         for r in sorted(rep, key=lambda r: (not (r['fouten'] or r['waarschuwingen']), r['name'])))
     miss = ''.join(f'<li>{e(n)} <small>({e(s)})</small></li>' for s, n in missing)
     html = f'''<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="robots" content="noindex">
 <title>Bol-infographics: overzicht</title><style>body{{font:15px/1.45 system-ui;margin:32px;color:#10282d}}
 table{{border-collapse:collapse;width:100%}}td{{border-top:1px solid #d5e6e8;padding:12px 8px;vertical-align:top}}
 td img{{width:120px;height:120px;margin:0 6px 6px 0;border:1px solid #d5e6e8;border-radius:8px}}
-.err{{color:#b42318}}.warn{{color:#8a5a00}}small{{color:#4a5f63}}.k span{{display:inline-block;margin-right:24px}}</style></head><body>
+.ph a{{position:relative;display:inline-block}}.ph img{{width:72px;height:72px}}.ph span{{position:absolute;left:4px;top:2px;font:700 12px system-ui;background:#10282d;color:#fff;border-radius:4px;padding:0 4px}}.err{{color:#b42318}}.warn{{color:#8a5a00}}small{{color:#4a5f63}}.k span{{display:inline-block;margin-right:24px}}</style></head><body>
 <h1>Bol-infographics</h1><p>Laatst bijgewerkt: {datetime.datetime.now().strftime("%d-%m-%Y %H:%M")} · <a href="feed.xml">feed.xml</a></p>
 <p class="k"><span><b>{len(rep)}</b> modellen</span><span><b>{cnt("nieuw")}</b> nieuw</span><span><b>{cnt("bijgewerkt")}</b> bijgewerkt</span><span><b>{n_ean}</b> EAN's in de feed</span></p>
 {f"<h2>Nog geen tekst in bol_infographic ({len(missing)})</h2><ul>{miss}</ul>" if missing else ""}
