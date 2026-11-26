@@ -14,7 +14,7 @@ Instellingen (omgevingsvariabelen):
   MISSING_LIKE    optioneel: naamfilter voor het overzicht 'tekst ontbreekt' (standaard Varomed%)
   FIXTURE         optioneel: pad naar een JSON-bestand in plaats van Magento (lokaal testen)
 """
-import os, re, io, unicodedata, json, hashlib, shutil, datetime, html as H, xml.sax.saxutils as X
+import os, sys, re, io, unicodedata, json, hashlib, shutil, datetime, html as H, xml.sax.saxutils as X
 import requests
 from PIL import Image
 from playwright.sync_api import sync_playwright
@@ -65,15 +65,25 @@ def parse(text):
     return d
 
 # ------------------------------------------------------------------ bronnen
+# Herkenbare headers, zodat Cloudflare dit script kan doorlaten (WAF-regel op X-Pipeline-Key).
+HTTP = requests.Session()
+HTTP.headers['User-Agent'] = 'All4fysio-bol-infographics'
+if os.environ.get('CF_PIPELINE_KEY'):
+    HTTP.headers['X-Pipeline-Key'] = os.environ['CF_PIPELINE_KEY']
+
 class Magento:
     def __init__(self):
         self.base = os.environ['MAGENTO_URL'].rstrip('/')
         self.s = requests.Session()
+        self.s.headers.update(HTTP.headers)
         self.s.headers['Authorization'] = 'Bearer ' + os.environ['MAGENTO_TOKEN']
         self.sets = {}
 
     def get(self, path, params=None):
         r = self.s.get(f'{self.base}/rest/V1/{path}', params=params, timeout=60)
+        if r.status_code == 403 and ('cloudflare' in r.headers.get('Server', '').lower() or 'cf-ray' in r.headers):
+            sys.exit(f'Geblokkeerd door Cloudflare (Ray ID {r.headers.get("cf-ray", "?")}). '
+                     'Controleer de WAF-regel voor X-Pipeline-Key en het secret CF_PIPELINE_KEY.')
         r.raise_for_status()
         return r.json()
 
@@ -170,7 +180,7 @@ class Fixture:
 
 # ------------------------------------------------------------------ foto's
 def load_photo(src):
-    data = requests.get(src, timeout=60).content if src.startswith('http') else open(src, 'rb').read()
+    data = HTTP.get(src, timeout=60).content if src.startswith('http') else open(src, 'rb').read()
     im = Image.open(io.BytesIO(data))
     if im.mode in ('RGBA', 'LA', 'P'):
         im = im.convert('RGBA')
